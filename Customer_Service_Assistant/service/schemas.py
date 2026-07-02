@@ -9,7 +9,12 @@ from __future__ import annotations
 import json
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+# ---------------------------------------------------------------------------
+# Shared primitives
+# ---------------------------------------------------------------------------
 
 
 class ObjectData(BaseModel):
@@ -19,6 +24,11 @@ class ObjectData(BaseModel):
     id: str
     title: Optional[str] = None
     attributes: dict = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Domain message & state
+# ---------------------------------------------------------------------------
 
 
 class Message(BaseModel):
@@ -43,3 +53,58 @@ class DialogueState(BaseModel):
     def to_json(self) -> str:
         """Serialize to a JSON string for database persistence."""
         return self.model_dump_json()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/chat
+# ---------------------------------------------------------------------------
+
+
+class ChatRequest(BaseModel):
+    """Inbound message from the user."""
+
+    sender_id: str
+    text: Optional[str] = None
+    object: Optional[ObjectData] = None
+    message_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _require_text_or_object(self) -> "ChatRequest":
+        if self.text is None and self.object is None:
+            raise ValueError("At least one of `text` or `object` is required")
+        return self
+
+
+class ChatMessage(BaseModel):
+    """A single reply item from the bot."""
+
+    text: Optional[str] = None
+    object: Optional[ObjectData] = None
+
+
+class ChatResponse(BaseModel):
+    """Response returned after processing a user message."""
+
+    sender_id: str
+    message_id: str
+    messages: list[ChatMessage]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/chat/history
+# ---------------------------------------------------------------------------
+
+
+class HistoryMessage(BaseModel):
+    """A single message in the conversation history."""
+
+    role: str  # "user" | "bot"
+    text: Optional[str] = None
+    object: Optional[ObjectData] = None
+
+
+class HistoryResponse(BaseModel):
+    """Response returned when querying chat history."""
+
+    sender_id: str
+    messages: list[HistoryMessage]

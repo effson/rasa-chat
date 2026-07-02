@@ -110,7 +110,7 @@ async def chat(
     return ChatResponse(
         sender_id=req.sender_id,
         message_id=message_id,
-        messages=[ChatMessage.from_service(bot_msg)],
+        messages=[ChatMessage.from_service_message(bot_msg)],
     )
 
 
@@ -123,6 +123,6 @@ async def chat_history(
 
     state = await _load_state(session, sender_id)
 
-    messages = [HistoryMessage.from_service(m) for m in state.messages]
+    messages = [HistoryMessage.from_service_message(m) for m in state.messages]
 
     return HistoryResponse(sender_id=sender_id, messages=messages)
