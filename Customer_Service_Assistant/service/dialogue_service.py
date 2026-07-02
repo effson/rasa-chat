@@ -11,6 +11,7 @@ from Customer_Service_Assistant.service.schemas import (
     ChatResponse,
     DialogueState,
     Message,
+    Turn,
 )
 
 
@@ -32,21 +33,29 @@ class DialogueService:
         """Process an incoming user message end-to-end.
 
         1. Load conversation state (Repository)
-        2. Append the user message
+        2. Create a Turn for this request, set as pending_turn
         3. Run the DialogueEngine to get the bot reply
-        4. Append the bot reply
+        4. Commit the turn to the current session
         5. Persist (Repository)
         6. Return a service-layer ``ChatResponse``
         """
         # Repository — load
         state = await self._load_state(sender_id)
+        state.sender_id = sender_id
 
-        # Append user message
-        state.messages.append(user_message)
+        # Create the pending turn with the user message
+        turn = Turn(input_message=user_message)
+        state.pending_turn = turn
 
         # Engine — core dispatch
         bot_msg = await self._engine.run(state)
-        state.messages.append(bot_msg)
+
+        # Complete and commit the turn
+        turn.assistant_messages.append(bot_msg)
+        session = state.ensure_session()
+        session.turns.append(turn)
+        session.last_activity_at = __import__("time").time()
+        state.pending_turn = None
 
         # Repository — save
         await self._save_state(sender_id, state)

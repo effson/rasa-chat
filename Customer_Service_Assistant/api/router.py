@@ -54,6 +54,13 @@ async def chat_history(
     row = result.fetchone()
     state = DialogueState.from_json(row.state_json) if row else DialogueState()
 
-    messages = [HistoryMessage.from_service_message(m) for m in state.messages]
+    # Flatten all messages from all sessions
+    all_messages: list = []
+    for session in state.sessions:
+        for turn in session.turns:
+            all_messages.append(turn.input_message)
+            all_messages.extend(turn.assistant_messages)
+
+    messages = [HistoryMessage.from_service_message(m) for m in all_messages]
 
     return HistoryResponse(sender_id=sender_id, messages=messages)

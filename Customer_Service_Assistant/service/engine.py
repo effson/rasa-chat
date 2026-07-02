@@ -47,7 +47,7 @@ class DialogueEngine:
 
         prompt: list[dict] = [{"role": "system", "content": system}]
 
-        for msg in state.messages:
+        for msg in state.current_messages:
             role = "user" if msg.role == "user" else "assistant"
             parts: list[str] = []
             if msg.text:
