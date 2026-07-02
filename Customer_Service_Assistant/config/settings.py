@@ -24,3 +24,32 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+if __name__ == "__main__":
+    # Quick smoke tests — run with: python Customer_Service_Assistant/config/settings.py
+
+    # 1. Singleton is a Settings instance
+    assert isinstance(settings, Settings), "settings should be a Settings instance"
+
+    # 2. Default values
+    s = Settings(_env_file="/nonexistent")  # rely only on field defaults
+    assert s.llm_model == "qwen-plus"
+    assert s.llm_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert s.llm_api_key == ""
+    assert s.database_url == ""
+    assert s.commerce_api_base_url == "http://127.0.0.1:18000"
+    assert s.app_host == "127.0.0.1"
+    assert s.app_port == 18000
+    assert isinstance(s.app_port, int)
+
+    # 3. Env-var overrides (set before constructing)
+    import os
+
+    os.environ["LLM_MODEL"] = "qwen-max"
+    os.environ["APP_PORT"] = "9000"
+    s2 = Settings(_env_file="/nonexistent")
+    assert s2.llm_model == "qwen-max"
+    assert s2.app_port == 9000
+
+    print("All settings tests passed.")
