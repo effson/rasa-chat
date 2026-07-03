@@ -13,6 +13,7 @@ import re
 import time
 
 from Customer_Service_Assistant.infrastructure.llm import llm
+from Customer_Service_Assistant.service.chitchat_handler import ChitChatHandler
 from Customer_Service_Assistant.service.schemas import (
     DialogueState,
     Message,
@@ -42,6 +43,7 @@ class DialogueEngine:
     def __init__(self) -> None:
         self._llm = llm
         self._validator = TurnPlanValidator()
+        self._chitchat = ChitChatHandler()
 
     # -- public API ----------------------------------------------------------
 
@@ -414,13 +416,24 @@ class DialogueEngine:
         result: ValidationResult,
         state: DialogueState,
     ) -> Message:
-        """Generate a bot response routed by the validated plan direction.
+        """Dispatch to the appropriate handler based on validated direction.
 
-        When steps 8-10 (TaskHandler / KnowledgeHandler / ChitchatHandler)
-        are fully built, this method becomes a dispatch to those handlers.
-        For now it delegates to ``_generate()`` with direction-aware
-        prompting.
+        - chitchat → ChitChatHandler (implemented)
+        - task    → inline prompt (placeholder for TaskHandler, step 8)
+        - knowledge → inline prompt (placeholder for KnowledgeHandler, step 9)
         """
+        direction = result.direction
+
+        if direction == "chitchat":
+            # The pending turn's input message is the user text for this turn.
+            user_text = ""
+            if state.pending_turn and state.pending_turn.input_message.text:
+                user_text = state.pending_turn.input_message.text
+            return await self._chitchat.handle(state, user_text)
+
+        # -- Placeholder for task / knowledge (will be replaced by dedicated
+        #    handlers when steps 8-9 are implemented) -------------------------
+
         direction_hints: dict[str, str] = {
             "task": (
                 "你正在帮用户办理业务。请根据对话上下文生成有用的回复。"
