@@ -2,12 +2,25 @@
 
 Modules
 -------
-links       — FlowStepLink hierarchy (static, conditional, fallback)
-steps       — FlowStep hierarchy (start, action, collect, end) + ResponseDefinition, SlotValidation
-models      — Flow, FlowSlot, FlowsList
-loader      — FlowLoader: parse YAML config → FlowsList
+links          — FlowStepLink hierarchy (static, conditional, fallback)
+steps          — FlowStep hierarchy (start, action, collect, end) + ResponseDefinition, SlotValidation
+models         — Flow, FlowSlot, FlowsList
+loader         — FlowLoader: parse YAML config → FlowsList
+commands       — Command hierarchy (start_flow, set_slots, cancel_flow, resume_flow)
+command_parser — CommandParser: dict/JSON → typed Command objects
 """
 
+from Customer_Service_Assistant.service.task.command_parser import (
+    CommandParseError,
+    CommandParser,
+)
+from Customer_Service_Assistant.service.task.commands import (
+    CancelFlowCommand,
+    Command,
+    ResumeFlowCommand,
+    SetSlotsCommand,
+    StartFlowCommand,
+)
 from Customer_Service_Assistant.service.task.links import (
     ConditionalLink,
     FallbackLink,
@@ -48,4 +61,13 @@ __all__ = [
     "FlowsList",
     # loader
     "FlowLoader",
+    # commands
+    "Command",
+    "StartFlowCommand",
+    "SetSlotsCommand",
+    "CancelFlowCommand",
+    "ResumeFlowCommand",
+    # command_parser
+    "CommandParser",
+    "CommandParseError",
 ]

@@ -232,6 +232,10 @@ class DialogueEngine:
     "reason": "一句话说明判断依据",
     "flow_id": "业务流ID（direction=task 时必填，可选值：order_status_query, logistics_tracking, refund_request, similar_product_recommendation, human_handoff, onboarding）",
     "action": "start | resume | cancel | continue（direction=task 时填写）",
+    "commands": [
+        {{"command": "start_flow", "flow": "..."}},
+        {{"command": "set_slots", "slots": {{"order_number": "..."}}}}
+    ]（direction=task 时填写，把 action 转为 command 对象；如果用户消息中包含 slot 值如订单号，用 set_slots 提取）,
     "knowledge_intent": "知识意图（direction=knowledge 时必填，可选值：商品信息, 退换货政策, 常见问题）",
     "missing_info": "缺少哪些关键信息（direction=invalid 时填写）",
     "conflicts": ["方向冲突1", "方向冲突2"]
@@ -242,6 +246,8 @@ class DialogueEngine:
 - 如果用户消息中有"它"、"这个"但无法确定具体指什么对象，direction 设为 "invalid"。
 - 如果用户只是打招呼、闲聊、感谢，direction 设为 "chitchat"。
 - 每轮只能选一个主方向。
+- commands 中的 command 只能是 start_flow、set_slots、cancel_flow、resume_flow 之一。
+- 如果 action 是 continue 但用户消息中包含了 slot 信息（如订单号），用 set_slots 提取。
 """
 
         # -- Conversation history --------------------------------------------
@@ -309,6 +315,11 @@ class DialogueEngine:
                 reason=str(data.get("reason", "")),
                 flow_id=data.get("flow_id") if data.get("flow_id") else None,
                 action=self._coerce_action(data.get("action")),
+                commands=(
+                    data.get("commands")
+                    if isinstance(data.get("commands"), list)
+                    else []
+                ),
                 knowledge_intent=(
                     data.get("knowledge_intent")
                     if data.get("knowledge_intent")

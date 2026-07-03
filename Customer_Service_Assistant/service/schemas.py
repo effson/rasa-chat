@@ -275,6 +275,7 @@ class TurnPlan(BaseModel):
     # -- task direction --------------------------------------------------------
     flow_id: Optional[str] = None
     action: Optional[Literal["start", "resume", "cancel", "continue"]] = None
+    commands: list[dict] = Field(default_factory=list)
 
     # -- knowledge direction ---------------------------------------------------
     knowledge_intent: Optional[str] = None
