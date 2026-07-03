@@ -9,8 +9,17 @@ loader            — FlowLoader: parse YAML config → FlowsList
 commands          — Command hierarchy (start_flow, set_slots, cancel_flow, resume_flow)
 command_parser    — CommandParser: dict/JSON → typed Command objects
 command_processor — CommandProcessor: apply Commands to DialogueState
+action_runner     — ActionRunner: execute flow actions + built-in action_response / action_listen
 """
 
+from Customer_Service_Assistant.service.task.action_runner import (
+    ActionRegistry,
+    ActionResult,
+    ActionRunner,
+    create_default_registry,
+    CustomAction,
+    render_template,
+)
 from Customer_Service_Assistant.service.task.command_parser import (
     CommandParseError,
     CommandParser,
@@ -78,4 +87,11 @@ __all__ = [
     # command_processor
     "CommandProcessor",
     "CommandProcessorError",
+    # action_runner
+    "ActionRunner",
+    "ActionResult",
+    "ActionRegistry",
+    "CustomAction",
+    "create_default_registry",
+    "render_template",
 ]
