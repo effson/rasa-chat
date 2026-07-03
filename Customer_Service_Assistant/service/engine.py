@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 
 from Customer_Service_Assistant.infrastructure.llm import llm
-from Customer_Service_Assistant.service.schemas import DialogueState, Message
+from Customer_Service_Assistant.service.schemas import DialogueState, Message, Turn
 
 # ---------------------------------------------------------------------------
 # Session timeout (seconds).  If the user's last activity was longer ago than
@@ -32,28 +32,36 @@ class DialogueEngine:
 
     # -- public API ----------------------------------------------------------
 
-    async def run(self, state: DialogueState) -> Message:
-        """Process *state* (with the latest user message already appended)
-        and return the bot's reply as a ``Message``.
+    async def run(self, state: DialogueState, user_message: Message) -> Message:
+        """Process *state* with the incoming *user_message* and return the
+        bot's reply as a ``Message``.
 
         Steps (per DialogueEngine 设计.md):
 
         1. Prepare Session — check timeout, create fresh session if needed
-        2. Planning — build the prompt for this turn
-        3. Route + Generate — for now, a single LLM call
-        4. Return the bot message
+        2. Create Turn — wrap the user message, set as pending_turn
+        3. Planning — build the LLM prompt for this turn
+        4. Route + Generate — for now, a single LLM call
+        5. Store the bot reply in the pending Turn
         """
         # 1. Prepare Session
         self._prepare_session(state)
 
-        # 2. Planning — build the prompt for this turn
+        # 2. Create Turn — one turn per user message
+        turn = Turn(input_message=user_message)
+        state.pending_turn = turn
+
+        # 3. Planning — build the prompt for this turn
         prompt = self._plan(state)
 
-        # 3. Route + Generate — for now, a single LLM call
+        # 4. Route + Generate — for now, a single LLM call
         bot_text = await self._generate(prompt)
 
-        # 4. Return the bot message
-        return Message(role="bot", text=bot_text)
+        # 5. Store the bot reply in the pending turn
+        bot_msg = Message(role="bot", text=bot_text)
+        turn.assistant_messages.append(bot_msg)
+
+        return bot_msg
 
     # -- Session preparation -------------------------------------------------
 
