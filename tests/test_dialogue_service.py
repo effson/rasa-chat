@@ -266,8 +266,7 @@ class TestSaveState:
             input_message=Message(role="user", text="这条消息不应被保存")
         )
 
-        await sv
-        c._save_state("u_exclude", state)
+        await svc._save_state("u_exclude", state)
         stored_json = session._store["u_exclude"]
 
         assert "pending_turn" not in json.loads(stored_json)

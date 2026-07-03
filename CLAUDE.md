@@ -4,60 +4,104 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An e-commerce customer service AI assistant powered by LangChain + FastAPI, using Qwen (Alibaba DashScope) as the LLM backend. The system integrates with a MySQL-backed commerce database to handle customer inquiries about orders, products, logistics, refunds, and shipping.
+An e-commerce customer service AI assistant powered by LangChain + FastAPI, using Qwen (Alibaba DashScope, OpenAI-compatible) as the LLM backend. The system integrates with a MySQL-backed commerce database to handle customer inquiries about orders, products, logistics, refunds, and shipping.
 
 ## Commands
 
 ```bash
-# Start MySQL database
-docker compose -f docker/docker-compose.yml up -d
-
-# Stop MySQL database
-docker compose -f docker/docker-compose.yml down
+# Install dependencies
+uv sync
 
 # Run the FastAPI app
 uvicorn Customer_Service_Assistant.main:app --host 127.0.0.1 --port 18000 --reload
 
-# Install dependencies (after cloning)
-pip install -e .
+# Start / stop MySQL (Docker)
+docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml down
+
+# All tests
+pytest tests/ -v
+
+# Unit tests only (in-memory fakes, no MySQL needed)
+pytest tests/test_dialogue_service.py tests/test_api.py tests/test_schemas.py -v
+
+# Integration tests only (requires real MySQL)
+pytest tests/test_dialogue_service_integration.py -v
+
+# Single test
+pytest tests/test_dialogue_service.py::TestLoadState::test_returns_empty_state_for_unknown_sender -v
 ```
 
 ## Architecture
 
-### Package Structure
+### Layer stack (top → bottom)
 
-- **`Customer_Service_Assistant/`** — Main application package. The `__init__.py` is currently a scaffold; the FastAPI app lives in `main.py` (to be created).
+```
+api/           — HTTP layer: FastAPI router, request/response schemas, DI wiring
+  ├─ router.py        POST /api/chat, GET /api/chat/history
+  ├─ dependencies.py  get_dialogue_service (AsyncSession → DialogueService)
+  └─ schemas.py       HTTP contract models (ChatRequest, ChatResponse, HistoryResponse)
+                        Every model has to_service()/from_service() converters.
 
-### Databases
+service/       — Domain layer: orchestration, engine dispatch, domain schemas
+  ├─ dialogue_service.py  Load state → create Turn → Engine.run() → save state
+  ├─ engine.py            DialogueEngine: _plan (prompt build) → _generate (LLM call)
+  └─ schemas.py           Domain models: DialogueState, Session, Turn, Message,
+                          TaskContext, SystemContext (7 discriminated sub-types)
 
-Two MySQL databases managed via Docker:
+infrastructure/ — External I/O: DB, LLM, commerce API client
+  ├─ db.py               Async SQLAlchemy engine + session factory (aiomysql)
+  ├─ llm.py              ChatOpenAI singleton pointed at DashScope
+  └─ api.py              httpx.AsyncClient factory for the commerce backend
+```
 
-1. **`customer_service`** — Persists conversation state in `dialogue_states` table (`sender_id` → `state_json` TEXT). This is the chatbot's conversation memory, allowing long-running dialogues to survive restarts.
+### Request flow (POST /api/chat)
 
-2. **`commerce`** — Business domain data with seed data for testing. Tables: `users`, `products`, `orders`, `order_items`, `logistics_records`, `logistics_traces`, `refund_requests`, `shipping_urge_requests`.
+For task processing design, please refer to`TaskHandler设计.md`.
 
-Database access is async via SQLAlchemy + aiomysql (`DATABASE_URL` uses `mysql+aiomysql://` scheme).
+For Dialogue's Engine design, please refer to `DialogueEngine设计.md`
 
-### LLM Integration
 
-- **Model**: `qwen-plus` via Alibaba DashScope (`LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1`)
-- **Framework**: LangChain with `langchain-openai` extension (DashScope is OpenAI-compatible)
-- The chat model is OpenAI-compatible, so use `ChatOpenAI` from `langchain-openai` with the base URL pointed at DashScope.
 
-### External Commerce API
+### Schema duality
 
-The app calls out to a separate commerce backend at `COMMERCE_API_BASE_URL` (default `http://127.0.0.1:18000` — same host, suggesting the commerce API may eventually be external or a separate service).
+The project maintains parallel schema layers — `api/schemas.py` and `service/schemas.py` — with explicit conversion methods (`to_service()` / `from_service()`). When adding fields, add them to the **service** schema first, then mirror in the **API** schema with converters.
 
-### Key Design Decisions
+### DialogueState persistence
 
-- **Conversation state persistence**: Dialogue state is stored as JSON blobs in MySQL keyed by `sender_id`. This means the chatbot must serialize/deserialize state on each turn rather than holding it in memory.
-- **Dual-database pattern**: The chatbot's operational data (`customer_service`) is separate from the business domain data (`commerce`), keeping concerns cleanly separated.
-- **Seed data is Chinese-language**: The commerce seed data (users, products, orders) is entirely in Chinese, indicating this is a Chinese-market e-commerce assistant.
+Conversation state is stored as a JSON blob in `dialogue_states` (`sender_id` PRIMARY KEY → `state_json TEXT`). Serialization uses `DialogueState.to_json()` / `from_json()` via Pydantic `model_dump_json` / `model_validate`. The `pending_turn` field is transient (`exclude=True`) — it is never persisted.
+
+### Key design decisions
+
+- **Dual-database**: `customer_service` (chat state) and `commerce` (business data) are separate databases on the same MySQL instance.
+- **Chinese-language domain**: All seed data and system prompts are in Chinese. The e-commerce domain (users, products, orders) uses Chinese naming.
+- **Upsert pattern**: `_save_state` uses MySQL `ON DUPLICATE KEY UPDATE` — insert on first message, update on subsequent messages from the same sender.
+- **Dependency injection**: FastAPI `Depends(get_dialogue_service)` wires `AsyncSession → DialogueService → DialogueEngine`.
+- **Flow definitions**: `flow_config/` contains YAML definitions for user flows and system flows. These are currently configuration artifacts (not consumed by the runtime engine) but define the intended flow orchestration model.
+- **Embedded smoke tests**: Several infrastructure modules (`db.py`, `llm.py`, `api.py`, `settings.py`) have `if __name__ == "__main__"` blocks that run quick self-checks. These are developer convenience, not part of the pytest suite.
+
+## Testing
+
+Two layers of tests:
+
+| Layer | File | Database | Purpose |
+| --- | --- | --- | --- |
+| Unit | `test_dialogue_service.py` | `FakeSession` (in-memory dict) | Fast feedback, logic correctness |
+| Integration | `test_dialogue_service_integration.py` | Real MySQL via `NullPool` | SQL correctness, serialization round-trips |
+
+**Test fixtures** (conftest.py):
+- `fake_session` — in-memory FakeSession for API tests
+- `async_client` — FastAPI test client with mocked DB + LLM
+- Integration test fixtures (`db_session`, `svc`) are defined locally in the integration test file
+
+**Windows note**: `conftest.py` sets `WindowsSelectorEventLoopPolicy` — required because the default `ProactorEventLoop` is incompatible with aiomysql. Integration tests use `NullPool` (fresh connection per test) to avoid pool dead-connection issues.
 
 ## Environment Configuration
 
-All config lives in `.env` (not committed — add to `.gitignore`):
-- `LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY` — LLM connection
-- `DATABASE_URL` — MySQL connection string
-- `COMMERCE_API_BASE_URL` — External commerce API
+All config in `.env` (not committed):
+- `LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY` — LLM (DashScope, OpenAI-compatible)
+- `DATABASE_URL` — `mysql+aiomysql://user:pass@host:3306/customer_service?charset=utf8mb4`
+- `COMMERCE_API_BASE_URL` — External commerce API (default `http://127.0.0.1:18000`)
 - `APP_HOST`, `APP_PORT` — FastAPI bind address
+
+Settings are loaded via `pydantic-settings` in `Customer_Service_Assistant/config/settings.py`.
