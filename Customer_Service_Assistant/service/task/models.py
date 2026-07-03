@@ -62,6 +62,13 @@ class Flow:
                 return step
         return None
 
+    def get_step(self, step_id: str) -> Optional[FlowStep]:
+        """Return the step with the given *step_id*, or ``None``."""
+        for step in self.steps:
+            if step.id == step_id:
+                return step
+        return None
+
 
 @dataclass(slots=True)
 class FlowsList:

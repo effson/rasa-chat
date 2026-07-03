@@ -10,6 +10,7 @@ commands          — Command hierarchy (start_flow, set_slots, cancel_flow, res
 command_parser    — CommandParser: dict/JSON → typed Command objects
 command_processor — CommandProcessor: apply Commands to DialogueState
 action_runner     — ActionRunner: execute flow actions + built-in action_response / action_listen
+flow_executor     — FlowExecutor: advance flows and execute actions until action_listen
 """
 
 from Customer_Service_Assistant.service.task.action_runner import (
@@ -35,6 +36,7 @@ from Customer_Service_Assistant.service.task.commands import (
     SetSlotsCommand,
     StartFlowCommand,
 )
+from Customer_Service_Assistant.service.task.flow_executor import FlowExecutor
 from Customer_Service_Assistant.service.task.links import (
     ConditionalLink,
     FallbackLink,
@@ -94,4 +96,6 @@ __all__ = [
     "CustomAction",
     "create_default_registry",
     "render_template",
+    # flow_executor
+    "FlowExecutor",
 ]

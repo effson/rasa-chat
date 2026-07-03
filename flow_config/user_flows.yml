@@ -52,7 +52,7 @@ flows:
         type: action
         action: action_response
         args:
-          text: "你好，这里是 Atguigu 电商助手。我可以帮你查订单状态、查物流、了解商品信息，或者提交退款申请。"
+          text: "你好。我可以帮你查订单状态、查物流、了解商品信息，或者提交退款申请。"
         next: end
 
       - id: end
