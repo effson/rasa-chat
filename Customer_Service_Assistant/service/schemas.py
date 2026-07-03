@@ -244,6 +244,62 @@ class DialogueState(BaseModel):
             self.current_session_id = session.session_id
         return session
 
+    # -- task state manipulation --------------------------------------------
+
+    def start_new_task(self, flow_id: str, step_id: str) -> TaskContext:
+        """Create a new :class:`TaskContext` and set it as ``active_task``.
+
+        Returns the newly created task context.
+        """
+        task = TaskContext(flow_id=flow_id, step_id=step_id)
+        self.active_task = task
+        return task
+
+    def pause_active_task(self) -> TaskContext | None:
+        """Move ``active_task`` to ``paused_tasks``.
+
+        Returns the paused task, or ``None`` if there was no active task.
+        """
+        task = self.active_task
+        if task is None:
+            return None
+        self.paused_tasks.append(task)
+        self.active_task = None
+        return task
+
+    def cancel_active_task(self) -> TaskContext | None:
+        """Remove and return ``active_task``, leaving none active.
+
+        Returns the canceled task, or ``None`` if there was no active task.
+        """
+        task = self.active_task
+        self.active_task = None
+        return task
+
+    def resume_task(self, flow_id: str) -> TaskContext | None:
+        """Find *flow_id* in ``paused_tasks`` and make it the ``active_task``.
+
+        Returns the resumed task, or ``None`` if no paused task matched.
+        """
+        for i, task in enumerate(self.paused_tasks):
+            if task.flow_id == flow_id:
+                del self.paused_tasks[i]
+                self.active_task = task
+                return task
+        return None
+
+    def set_slot(self, name: str, value: object) -> None:
+        """Write *value* to slot *name* on ``active_task``.
+
+        Does nothing if there is no active task.
+        """
+        if self.active_task is not None:
+            self.active_task.slots[name] = value
+
+    def activate_system_flow(self, system_context: SystemContextUnion) -> None:
+        """Set *system_context* as the ``active_system_flow``."""
+        self.active_system_flow = system_context
+
     # -- persistence --------------------------------------------------------
 
     @classmethod

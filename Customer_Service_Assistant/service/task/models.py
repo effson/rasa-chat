@@ -13,9 +13,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from Customer_Service_Assistant.service.task.steps import FlowStep
+from Customer_Service_Assistant.service.task.steps import FlowStep, FlowStepType
 
 
 @dataclass(slots=True)
@@ -55,6 +55,13 @@ class Flow:
     slots: List[FlowSlot] = field(default_factory=list)
     name: str | None = None
 
+    def get_start_step(self) -> Optional[FlowStep]:
+        """Return the ``start`` step of this flow, or ``None``."""
+        for step in self.steps:
+            if step.type == FlowStepType.START:
+                return step
+        return None
+
 
 @dataclass(slots=True)
 class FlowsList:
@@ -67,3 +74,10 @@ class FlowsList:
 
     flows: List[Flow] = field(default_factory=list)
     slots: Dict[str, FlowSlot] = field(default_factory=dict)
+
+    def get_flow(self, flow_id: str) -> Optional[Flow]:
+        """Return the flow with the given *flow_id*, or ``None``."""
+        for flow in self.flows:
+            if flow.id == flow_id:
+                return flow
+        return None
