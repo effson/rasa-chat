@@ -1,15 +1,26 @@
 """Engine layer — core dispatcher that orchestrates a single turn.
 
 Flow:  Prepare Session → Create Turn → Classify Message →
-       (Object | Text) → Planning → Generate → Commit
+       (Object | Text) → Planning → Validate → Route → Generate → Commit
+
+Steps 1-5 were implemented first; step 6 (validation) is added here.
 """
 
 from __future__ import annotations
 
+import json
+import re
 import time
 
 from Customer_Service_Assistant.infrastructure.llm import llm
-from Customer_Service_Assistant.service.schemas import DialogueState, Message, Turn
+from Customer_Service_Assistant.service.schemas import (
+    DialogueState,
+    Message,
+    Turn,
+    TurnPlan,
+    ValidationResult,
+)
+from Customer_Service_Assistant.service.validator import TurnPlanValidator
 
 # ---------------------------------------------------------------------------
 # Session timeout (seconds).  If the user's last activity was longer ago than
@@ -30,6 +41,7 @@ class DialogueEngine:
 
     def __init__(self) -> None:
         self._llm = llm
+        self._validator = TurnPlanValidator()
 
     # -- public API ----------------------------------------------------------
 
@@ -43,7 +55,8 @@ class DialogueEngine:
         2. Create Turn
         3. Classify message — text, object, or both
         4. Process object — write focused_object, check slot match
-        5. Process text — planning → generate
+        5. Process text — TurnPlanner → structured TurnPlan
+        6. Validate plan — TurnPlanValidator → route or clarify
         """
         # 1. Prepare Session
         self._prepare_session(state)
@@ -61,10 +74,21 @@ class DialogueEngine:
             self._process_object_message(state, user_message)
 
         if has_text:
-            # Step 5 — text messages: plan → generate via LLM
-            prompt = self._plan(state)
-            bot_text = await self._generate(prompt)
-            bot_msg = Message(role="bot", text=bot_text)
+            # Steps 5-6 — plan → validate → route → generate
+            plan = await self._plan(state, user_message.text)
+
+            result = self._validate_plan(plan, state, user_message.text)
+
+            if not result.is_valid:
+                # Plan failed validation — generate clarification
+                bot_msg = await self._generate_clarification(
+                    plan, result, state, user_message.text
+                )
+            else:
+                # Plan is valid — route to the appropriate handler
+                bot_msg = await self._generate_for_plan(
+                    plan, result, state
+                )
         else:
             # Pure object message (no text) — respond based on slot match
             bot_msg = self._respond_to_object(state)
@@ -146,29 +170,23 @@ class DialogueEngine:
             text=f"已收到你选择的{label}，请问需要我帮你做什么？",
         )
 
-    # -- Step 5: process text messages (Planning) ---------------------------
+    # -- Step 5: process text messages (TurnPlanner) --------------------------
 
-    def _plan(self, state: DialogueState) -> list[dict]:
-        """Build the LLM prompt from the full conversation history **and**
-        the current running state (active_task, paused_tasks, focused_object).
+    def _build_plan_context(self, state: DialogueState) -> str:
+        """Build the system-context portion of the planning prompt.
 
-        Design doc §2.5 — TurnPlanner should consider:
-
-        * Recent dialogue
-        * ``active_task`` — is the user continuing a previous task?
-        * ``paused_tasks`` — is the user resuming a paused task?
-        * ``focused_object`` — order / product context the user clicked
-        * Available flows & knowledge intents (stub — hard-coded below)
+        This is the prompt-construction logic that was previously in
+        ``_plan()``, extracted so the LLM-calling ``_plan()`` method
+        stays focused on the structured-output interaction.
         """
-        system_parts: list[str] = [
-            "你是一个电商客服助手。请根据用户的问题提供帮助。",
-            "回复要简洁、友好、专业。",
+        parts: list[str] = [
+            "你是一个电商客服助手，负责理解用户意图并输出结构化计划。",
         ]
 
         # -- Context: active task --------------------------------------------
         active = state.active_task
         if active is not None:
-            system_parts.append(
+            parts.append(
                 f"当前正在处理：{active.flow_id}（步骤 {active.step_id}）。"
                 f"用户可能在继续此任务。"
             )
@@ -177,7 +195,7 @@ class DialogueEngine:
         paused = state.paused_tasks
         if paused:
             names = ", ".join(p.flow_id for p in paused)
-            system_parts.append(
+            parts.append(
                 f"用户有暂停的任务：{names}。用户可能想回到其中之一。"
             )
 
@@ -185,21 +203,250 @@ class DialogueEngine:
         focus = state.focused_object
         if focus is not None:
             label = focus.title or focus.id
-            system_parts.append(
-                f"用户当前关注的对象：[{focus.type}] {label}。"
+            parts.append(f"用户当前关注的对象：[{focus.type}] {label}。")
+
+        return "\n".join(parts)
+
+    async def _plan(self, state: DialogueState, user_text: str) -> TurnPlan:
+        """Call the LLM to produce a structured ``TurnPlan``.
+
+        Design doc §2.5 — TurnPlanner considers recent dialogue, active
+        tasks, paused tasks, focused objects, and available capabilities.
+        """
+
+        system_context = self._build_plan_context(state)
+
+        # -- Planning instruction with JSON schema ---------------------------
+        planning_instruction = f"""{system_context}
+
+你可以处理以下业务：查订单、查物流、申请退款、催发货、推荐商品。
+你可以回答以下知识类问题：商品信息、退换货政策、常见问题。
+
+请分析用户最后一条消息的意图，输出一个 JSON 计划。
+
+输出格式（严格 JSON，不要输出其他内容）：
+{{
+    "direction": "task" | "knowledge" | "chitchat" | "invalid",
+    "reason": "一句话说明判断依据",
+    "flow_id": "业务流ID（direction=task 时必填，可选值：order_status_query, logistics_tracking, refund_request, similar_product_recommendation, human_handoff, onboarding）",
+    "action": "start | resume | cancel | continue（direction=task 时填写）",
+    "knowledge_intent": "知识意图（direction=knowledge 时必填，可选值：商品信息, 退换货政策, 常见问题）",
+    "missing_info": "缺少哪些关键信息（direction=invalid 时填写）",
+    "conflicts": ["方向冲突1", "方向冲突2"]
+}}
+
+规则：
+- 如果无法确定用户意图，direction 设为 "invalid"。
+- 如果用户消息中有"它"、"这个"但无法确定具体指什么对象，direction 设为 "invalid"。
+- 如果用户只是打招呼、闲聊、感谢，direction 设为 "chitchat"。
+- 每轮只能选一个主方向。
+"""
+
+        # -- Conversation history --------------------------------------------
+        messages: list[dict] = [
+            {"role": "system", "content": planning_instruction}
+        ]
+
+        for msg in state.current_messages:
+            role = "user" if msg.role == "user" else "assistant"
+            content_parts: list[str] = []
+            if msg.text:
+                content_parts.append(msg.text)
+            if msg.object:
+                content_parts.append(
+                    f"[{msg.object.type}: {msg.object.title or msg.object.id}]"
+                )
+            messages.append({"role": role, "content": "\n".join(content_parts)})
+
+        # Append the current user message (may already be in current_messages
+        # via pending_turn, but be explicit so the planner always sees it).
+        messages.append({"role": "user", "content": user_text})
+
+        # -- LLM call --------------------------------------------------------
+        response = await self._llm.ainvoke(messages)
+        raw = response.content.strip() if response.content else ""
+
+        return self._parse_plan_json(raw)
+
+    def _parse_plan_json(self, raw: str) -> TurnPlan:
+        """Parse the LLM's JSON response into a ``TurnPlan``.
+
+        Handles common LLM output quirks: markdown code fences, trailing
+        commas, and stray text before / after the JSON object.
+        """
+        # Strip markdown code fences
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+
+        # Find the outermost JSON object
+        match = re.search(r"\{.*}", raw, re.DOTALL)
+        if not match:
+            # Can't find any JSON — fall back to an invalid plan
+            return TurnPlan(
+                direction="invalid",
+                reason=f"无法解析 LLM 输出为 JSON: {raw[:200]}",
+                missing_info="LLM 输出格式错误",
             )
 
-        # -- Context: available capabilities (stub) --------------------------
-        system_parts.append(
-            "你可以处理以下业务：查订单、查物流、申请退款、催发货、推荐商品。"
-            "你可以回答以下知识类问题：商品信息、退换货政策、常见问题。"
-        )
+        json_str = match.group(0)
 
-        prompt: list[dict] = [
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            return TurnPlan(
+                direction="invalid",
+                reason=f"JSON 解析失败: {json_str[:200]}",
+                missing_info="LLM 输出 JSON 格式错误",
+            )
+
+        # Coerce the raw dict into a TurnPlan, filling in defaults for
+        # any missing or malformed fields.
+        try:
+            return TurnPlan(
+                direction=self._coerce_direction(data.get("direction")),
+                reason=str(data.get("reason", "")),
+                flow_id=data.get("flow_id") if data.get("flow_id") else None,
+                action=self._coerce_action(data.get("action")),
+                knowledge_intent=(
+                    data.get("knowledge_intent")
+                    if data.get("knowledge_intent")
+                    else None
+                ),
+                missing_info=(
+                    data.get("missing_info")
+                    if data.get("missing_info")
+                    else None
+                ),
+                conflicts=(
+                    data.get("conflicts")
+                    if isinstance(data.get("conflicts"), list)
+                    else []
+                ),
+            )
+        except Exception:
+            return TurnPlan(
+                direction="invalid",
+                reason=f"TurnPlan 构造失败: {json_str[:200]}",
+                missing_info="LLM 输出结构不完整",
+            )
+
+    @staticmethod
+    def _coerce_direction(raw: object) -> str:
+        """Normalize the direction field, defaulting to 'invalid'."""
+        if isinstance(raw, str) and raw in ("task", "knowledge", "chitchat"):
+            return raw
+        return "invalid"
+
+    @staticmethod
+    def _coerce_action(raw: object) -> str | None:
+        """Normalize the action field, defaulting to None."""
+        if isinstance(raw, str) and raw in (
+            "start", "resume", "cancel", "continue",
+        ):
+            return raw
+        return None
+
+    # -- Step 6: validate plan ------------------------------------------------
+
+    def _validate_plan(
+        self,
+        plan: TurnPlan,
+        state: DialogueState,
+        user_text: str,
+    ) -> ValidationResult:
+        """Run ``TurnPlanValidator`` on the planner's output.
+
+        Design doc §2.6 — the plan must be checked before execution.
+        """
+        return self._validator.validate(plan, state, user_text)
+
+    # -- Generate: clarification (plan invalid) -------------------------------
+
+    async def _generate_clarification(
+        self,
+        _plan: TurnPlan,  # reserved for ClarifyResponder (step 7)
+        result: ValidationResult,
+        state: DialogueState,
+        user_text: str,
+    ) -> Message:
+        """Generate a clarification question when the plan fails validation.
+
+        Design doc §2.7 — ClarifyResponder.  When step 7 is fully
+        implemented, this body will delegate to a dedicated ClarifyResponder
+        class.  For now the engine generates a targeted follow-up inline.
+        """
+        issues_text = "；".join(result.issues)
+
+        system_parts: list[str] = [
+            "你是一个电商客服助手。用户的意图不明确，你需要友好地追问以澄清。",
+            "追问要自然、简短，一次只问一个最关键的问题。",
+            f"已知问题：{issues_text}",
+        ]
+
+        focus = state.focused_object
+        if focus is not None:
+            label = focus.title or focus.id
+            system_parts.append(
+                f"用户当前关注 [{focus.type}] {label}，可以围绕这个对象追问。"
+            )
+
+        messages: list[dict] = [
             {"role": "system", "content": "\n".join(system_parts)}
         ]
 
-        # -- Recent dialogue -------------------------------------------------
+        for msg in state.current_messages:
+            role = "user" if msg.role == "user" else "assistant"
+            if msg.text:
+                messages.append({"role": role, "content": msg.text})
+
+        messages.append({"role": "user", "content": user_text})
+
+        response = await self._llm.ainvoke(messages)
+        text = response.content.strip() if response.content else "抱歉，我没有完全理解你的意思，可以再说具体一点吗？"
+
+        return Message(role="bot", text=text)
+
+    # -- Generate: routed (plan valid) ----------------------------------------
+
+    async def _generate_for_plan(
+        self,
+        _plan: TurnPlan,  # reserved for TaskHandler et al. (steps 8-10)
+        result: ValidationResult,
+        state: DialogueState,
+    ) -> Message:
+        """Generate a bot response routed by the validated plan direction.
+
+        When steps 8-10 (TaskHandler / KnowledgeHandler / ChitchatHandler)
+        are fully built, this method becomes a dispatch to those handlers.
+        For now it delegates to ``_generate()`` with direction-aware
+        prompting.
+        """
+        direction_hints: dict[str, str] = {
+            "task": (
+                "你正在帮用户办理业务。请根据对话上下文生成有用的回复。"
+                "如果需要用户提供信息（如订单号），请友好地询问。"
+            ),
+            "knowledge": (
+                "你正在回答用户的知识性问题。请根据已知信息简洁准确地回答。"
+                "如果信息不足，可以告诉用户你暂时无法回答。"
+            ),
+            "chitchat": (
+                "用户正在闲聊。请用友好、自然的语气回复，保持简短。"
+            ),
+        }
+
+        hint = direction_hints.get(
+            result.direction or "", "请根据对话上下文生成合适的回复。"
+        )
+
+        # Build a minimal prompt with direction hint
+        messages: list[dict] = [
+            {
+                "role": "system",
+                "content": f"你是一个电商客服助手。{hint}回复要简洁、友好、专业。",
+            }
+        ]
+
         for msg in state.current_messages:
             role = "user" if msg.role == "user" else "assistant"
             parts: list[str] = []
@@ -209,17 +456,9 @@ class DialogueEngine:
                 parts.append(
                     f"[{msg.object.type}: {msg.object.title or msg.object.id}]"
                 )
-            prompt.append({"role": role, "content": "\n".join(parts)})
+            messages.append({"role": role, "content": "\n".join(parts)})
 
-        return prompt
+        response = await self._llm.ainvoke(messages)
+        text = response.content.strip() if response.content else ""
 
-    # -- Generate (stub — will fan out to tracks) ----------------------------
-
-    async def _generate(self, prompt: list[dict]) -> str:
-        """Call the LLM and return the response text.
-
-        When Route is built, this will become a dispatch to
-        Task / Knowledge / Chitchat tracks.
-        """
-        response = await self._llm.ainvoke(prompt)
-        return response.content.strip() if response.content else ""
+        return Message(role="bot", text=text)

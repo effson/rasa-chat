@@ -57,7 +57,9 @@ infrastructure/ — External I/O: DB, LLM, commerce API client
 
 ### Request flow (POST /api/chat)
 
-For task processing design, please refer to`TaskHandler设计.md`.
+For task processing design, please refer to`TaskHandler设计.md` `TaskHandler具体设计.md`.
+
+For knowledge ＆ chitchat processing design, please refer to`KnowledgeHandler&ChitChatHandler设计.md` .
 
 For Dialogue's Engine design, please refer to `DialogueEngine设计.md`
 

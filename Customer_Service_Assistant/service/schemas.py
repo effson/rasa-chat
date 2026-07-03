@@ -258,6 +258,46 @@ class DialogueState(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Turn planning & validation (DialogueEngine §2.5–2.6)
+# ---------------------------------------------------------------------------
+
+
+class TurnPlan(BaseModel):
+    """Structured planning result produced by TurnPlanner.
+
+    Represents the engine's understanding of what the user wants to do
+    this turn — which direction to take and with what parameters.
+    """
+
+    direction: Literal["task", "knowledge", "chitchat", "invalid"]
+    reason: str = ""
+
+    # -- task direction --------------------------------------------------------
+    flow_id: Optional[str] = None
+    action: Optional[Literal["start", "resume", "cancel", "continue"]] = None
+
+    # -- knowledge direction ---------------------------------------------------
+    knowledge_intent: Optional[str] = None
+
+    # -- invalid direction -----------------------------------------------------
+    missing_info: Optional[str] = None
+    conflicts: list[str] = Field(default_factory=list)
+
+
+class ValidationResult(BaseModel):
+    """Result of TurnPlanValidator checking a TurnPlan.
+
+    When *is_valid* is True, *direction* carries the confirmed routing.
+    When *is_valid* is False, *issues* explains every reason the plan was
+    rejected so ClarifyResponder can ask a targeted follow-up question.
+    """
+
+    is_valid: bool
+    direction: Optional[Literal["task", "knowledge", "chitchat"]] = None
+    issues: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # POST /api/chat
 # ---------------------------------------------------------------------------
 
