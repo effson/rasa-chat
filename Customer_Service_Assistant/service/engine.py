@@ -4,6 +4,7 @@ Flow:  Prepare Session → Create Turn → Classify Message →
        (Object | Text) → Planning → Validate → Route → Generate → Commit
 
 Steps 1-5 were implemented first; step 6 (validation) is added here.
+Step 8 (task handling) is now wired through TaskHandler.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from pathlib import Path
 
 from Customer_Service_Assistant.infrastructure.llm import llm
 from Customer_Service_Assistant.service.chitchat_handler import ChitChatHandler
@@ -21,6 +23,12 @@ from Customer_Service_Assistant.service.schemas import (
     TurnPlan,
     ValidationResult,
 )
+from Customer_Service_Assistant.service.task.action_runner import ActionRunner
+from Customer_Service_Assistant.service.task.command_parser import CommandParser
+from Customer_Service_Assistant.service.task.command_processor import CommandProcessor
+from Customer_Service_Assistant.service.task.flow_executor import FlowExecutor
+from Customer_Service_Assistant.service.task.loader import FlowLoader
+from Customer_Service_Assistant.service.task.task_handler import TaskHandler
 from Customer_Service_Assistant.service.validator import TurnPlanValidator
 
 # ---------------------------------------------------------------------------
@@ -44,6 +52,20 @@ class DialogueEngine:
         self._llm = llm
         self._validator = TurnPlanValidator()
         self._chitchat = ChitChatHandler()
+
+        # -- TaskHandler pipeline ------------------------------------------
+        _flow_dir = Path(__file__).resolve().parent.parent.parent / "flow_config"
+        _flows = FlowLoader().load([
+            _flow_dir / "user_flows.yml",
+            _flow_dir / "system_flows.yml",
+        ])
+        _runner = ActionRunner()
+        self._task_handler = TaskHandler(
+            command_processor=CommandProcessor(),
+            command_parser=CommandParser(),
+            flow_executor=FlowExecutor(_runner),
+            flows=_flows,
+        )
 
     # -- public API ----------------------------------------------------------
 
@@ -83,21 +105,22 @@ class DialogueEngine:
 
             if not result.is_valid:
                 # Plan failed validation — generate clarification
-                bot_msg = await self._generate_clarification(
+                bot_msgs = await self._generate_clarification(
                     plan, result, state, user_message.text
                 )
             else:
                 # Plan is valid — route to the appropriate handler
-                bot_msg = await self._generate_for_plan(
+                bot_msgs = await self._generate_for_plan(
                     plan, result, state
                 )
         else:
             # Pure object message (no text) — respond based on slot match
-            bot_msg = self._respond_to_object(state)
+            bot_msgs = [self._respond_to_object(state)]
 
-        # Store bot reply in the pending turn
-        turn.assistant_messages.append(bot_msg)
-        return bot_msg
+        # Store bot replies in the pending turn
+        turn.assistant_messages.extend(bot_msgs)
+        # Return the primary (last) bot message for API compatibility
+        return bot_msgs[-1] if bot_msgs else Message(role="bot", text="")
 
     # -- Session preparation -------------------------------------------------
 
@@ -381,7 +404,7 @@ class DialogueEngine:
         result: ValidationResult,
         state: DialogueState,
         user_text: str,
-    ) -> Message:
+    ) -> list[Message]:
         """Generate a clarification question when the plan fails validation.
 
         Design doc §2.7 — ClarifyResponder.  When step 7 is fully
@@ -417,51 +440,38 @@ class DialogueEngine:
         response = await self._llm.ainvoke(messages)
         text = response.content.strip() if response.content else "抱歉，我没有完全理解你的意思，可以再说具体一点吗？"
 
-        return Message(role="bot", text=text)
+        return [Message(role="bot", text=text)]
 
     # -- Generate: routed (plan valid) ----------------------------------------
 
     async def _generate_for_plan(
         self,
-        _plan: TurnPlan,  # reserved for TaskHandler et al. (steps 8-10)
+        plan: TurnPlan,
         result: ValidationResult,
         state: DialogueState,
-    ) -> Message:
+    ) -> list[Message]:
         """Dispatch to the appropriate handler based on validated direction.
 
-        - chitchat → ChitChatHandler (implemented)
-        - task    → inline prompt (placeholder for TaskHandler, step 8)
+        - task     → TaskHandler (step 8 — parse commands, advance flows)
+        - chitchat → ChitChatHandler (step 10)
         - knowledge → inline prompt (placeholder for KnowledgeHandler, step 9)
         """
         direction = result.direction
 
+        if direction == "task":
+            return await self._task_handler.run(plan.commands, state)
+
         if direction == "chitchat":
-            # The pending turn's input message is the user text for this turn.
             user_text = ""
             if state.pending_turn and state.pending_turn.input_message.text:
                 user_text = state.pending_turn.input_message.text
-            return await self._chitchat.handle(state, user_text)
+            msg = await self._chitchat.handle(state, user_text)
+            return [msg]
 
-        # -- Placeholder for task / knowledge (will be replaced by dedicated
-        #    handlers when steps 8-9 are implemented) -------------------------
+        # -- Placeholder for knowledge (will be replaced by KnowledgeHandler,
+        #    step 9) ----------------------------------------------------------
 
-        direction_hints: dict[str, str] = {
-            "task": (
-                "你正在帮用户办理业务。请根据对话上下文生成有用的回复。"
-                "如果需要用户提供信息（如订单号），请友好地询问。"
-            ),
-            "knowledge": (
-                "你正在回答用户的知识性问题。请根据已知信息简洁准确地回答。"
-                "如果信息不足，可以告诉用户你暂时无法回答。"
-            ),
-            "chitchat": (
-                "用户正在闲聊。请用友好、自然的语气回复，保持简短。"
-            ),
-        }
-
-        hint = direction_hints.get(
-            result.direction or "", "请根据对话上下文生成合适的回复。"
-        )
+        hint = "你正在回答用户的知识性问题。请根据已知信息简洁准确地回答。如果信息不足，可以告诉用户你暂时无法回答。"
 
         # Build a minimal prompt with direction hint
         messages: list[dict] = [
@@ -485,4 +495,4 @@ class DialogueEngine:
         response = await self._llm.ainvoke(messages)
         text = response.content.strip() if response.content else ""
 
-        return Message(role="bot", text=text)
+        return [Message(role="bot", text=text)]

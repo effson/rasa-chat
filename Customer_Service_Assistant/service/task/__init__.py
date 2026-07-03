@@ -11,6 +11,7 @@ command_parser    — CommandParser: dict/JSON → typed Command objects
 command_processor — CommandProcessor: apply Commands to DialogueState
 action_runner     — ActionRunner: execute flow actions + built-in action_response / action_listen
 flow_executor     — FlowExecutor: advance flows and execute actions until action_listen
+task_handler      — TaskHandler: top-level orchestrator (parse → apply → execute → collect)
 """
 
 from Customer_Service_Assistant.service.task.action_runner import (
@@ -55,6 +56,10 @@ from Customer_Service_Assistant.service.task.steps import (
     SlotValidation,
     StartFlowStep,
 )
+from Customer_Service_Assistant.service.task.task_handler import (
+    TaskHandler,
+    TaskHandlerError,
+)
 
 __all__ = [
     # links
@@ -98,4 +103,7 @@ __all__ = [
     "render_template",
     # flow_executor
     "FlowExecutor",
+    # task_handler
+    "TaskHandler",
+    "TaskHandlerError",
 ]
